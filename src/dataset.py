@@ -1,9 +1,11 @@
 import torch
 import zipfile
 import xml.etree.ElementTree as ET
+import torch.nn as nn
 from PIL import Image
 from pathlib import Path
 from torch.utils.data import Dataset
+
 
 # class to idx in VOC dataset
 VOC_CLASSES = [
@@ -31,15 +33,43 @@ class VOCDataset(Dataset):
         annotation_dict = voc_to_dict(annotation_path)
 
         if self.transform:
-            img = self.transform(img)
+            img, annotation_dict = self.transform(img, annotation_dict)
         
         return img, annotation_dict
 
 def collate_fn(batch):
-    data = [item[0] for item in batch]
-    targets = [item[1] for item in batch]
+    imgs, annotations = zip(*batch)
 
-    return torch.stack(data, dim=0), targets
+    max_height = max(img.shape[1] for img in imgs)
+    max_width = max(img.shape[2] for img in imgs)
+
+    padded_imgs = []
+    img_sizes_before_pad = []
+    gt_boxes = []
+    gt_labels = []
+
+    for img, annotation in zip(imgs, annotations):
+        pad_height = max_height - img.shape[1]
+        pad_width = max_width - img.shape[2]
+
+        img_sizes_before_pad.append((img.shape[1], img.shape[2]))  # Store original height and width
+
+        padded_img = nn.functional.pad(img, (0, pad_width, 0, pad_height), mode='constant', value=0)
+        padded_imgs.append(padded_img)
+
+        boxes = torch.tensor([
+            [obj["bndbox"]["x_min"], 
+             obj["bndbox"]["y_min"], 
+             obj["bndbox"]["x_max"], 
+             obj["bndbox"]["y_max"]]
+             for obj in annotation["objects"]], dtype=torch.float32)
+        
+        labels = torch.tensor([obj["class_idx"] for obj in annotation["objects"]], dtype=torch.int64)
+
+        gt_boxes.append(boxes)
+        gt_labels.append(labels)
+
+    return torch.stack(padded_imgs, dim=0), gt_boxes, gt_labels, img_sizes_before_pad
 
 def create_voc_dataloader(img_paths_list, transform=None, batch_size=32, shuffle=True):
     voc_dataset = VOCDataset(img_paths_list, transform=transform)
@@ -65,20 +95,16 @@ def voc_to_dict(annotation_path):
     }
 
     for obj in root.findall("object"):
-        xmin = float(obj.find("bndbox").find("xmin").text)
-        ymin = float(obj.find("bndbox").find("ymin").text)
-        xmax = float(obj.find("bndbox").find("xmax").text)
-        ymax = float(obj.find("bndbox").find("ymax").text)
 
         name = obj.find("name").text
         obj_dict = {
             "name" : name,
             "class_idx" : CLS_TO_IDX[name],
             "bndbox" : {
-                "x_c" : ((xmin + xmax) / 2)/img_width,
-                "y_c" : (ymin + ymax) / 2/img_height,
-                "width" : (xmax - xmin)/img_width,
-                "height" : (ymax - ymin)/img_height
+                "x_min" : float(obj.find("bndbox").find("xmin").text)/img_width,
+                "y_min" : float(obj.find("bndbox").find("ymin").text)/img_height,
+                "x_max" : float(obj.find("bndbox").find("xmax").text)/img_width,
+                "y_max" : float(obj.find("bndbox").find("ymax").text)/img_height
             }
         }
 
@@ -86,7 +112,7 @@ def voc_to_dict(annotation_path):
 
     return annotation_data
 
-def get_voc_img_paths():
+def get_voc_img_paths_train():
     data_path = Path("data/")
     if not data_path.exists():
         raise RuntimeError("Data directory not found. Please run data_setup.py to extract the datasets.")
@@ -98,11 +124,37 @@ def get_voc_img_paths():
     voc2007_img_path = voc2007_path / "JPEGImages"
     voc2012_img_path = voc2012_path / "JPEGImages"
 
-    voc2007_img_paths_list = list(voc2007_img_path.glob("*.jpg"))
-    voc2012_img_paths_list = list(voc2012_img_path.glob("*.jpg"))
+    voc2007_trainval = voc2007_path / "ImageSets" / "Layout" / "trainval.txt"
+    voc2012_trainval = voc2012_path / "ImageSets" / "Layout" / "trainval.txt"
 
-    return voc2007_img_paths_list, voc2012_img_paths_list
+    with open(voc2007_trainval, "r") as f:
+        voc2007_img_paths_train = [voc2007_img_path / (line.strip() + ".jpg") for line in f.readlines()]
+    with open(voc2012_trainval, "r") as f:
+        voc2012_img_paths_train = [voc2012_img_path / ((line.strip()).split(" ")[0] + ".jpg") for line in f.readlines()]
 
+    return voc2007_img_paths_train, voc2012_img_paths_train
+
+def get_voc_img_paths_test():
+    data_path = Path("data/")
+    if not data_path.exists():
+        raise RuntimeError("Data directory not found. Please run data_setup.py to extract the datasets.")
+
+    # Define the paths to the VOC2007 and VOC2012 datasets and their image directories
+    voc2007_path = data_path / "VOC2007"
+    voc2012_path = data_path / "VOC2012"
+
+    voc2007_img_path = voc2007_path / "JPEGImages"
+    voc2012_img_path = voc2012_path / "JPEGImages"
+
+    voc2007_test = voc2007_path / "ImageSets" / "Layout" / "test.txt"
+    voc2012_test = voc2012_path / "ImageSets" / "Layout" / "test.txt"
+
+    with open(voc2007_test, "r") as f:
+        voc2007_img_paths_test = [voc2007_img_path / (line.strip() + ".jpg") for line in f.readlines()]
+    with open(voc2012_test, "r") as f:
+        voc2012_img_paths_test = [voc2012_img_path / ((line.strip()).split(" ")[0] + ".jpg") for line in f.readlines()]
+
+    return voc2007_img_paths_test, voc2012_img_paths_test
 
 if __name__ == "__main__":
     data_path = Path("data/")

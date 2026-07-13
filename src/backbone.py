@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 from torchvision.models import resnet50, ResNet50_Weights
@@ -25,6 +26,9 @@ class Backbone(nn.Module):
         return x
 
 
+# Here we could have used transforms.Compose(lambda img : resize_shorter_side(img), ToTensor()) without returning the target
+# But as a practice, we will create custom transform classes to handle both the image and its corresponding annotation dictionary.
+
 # Create a custom transform class to convert PIL images to PyTorch tensors and apply the resize transformation 
 class ToTensorTransform:
     def __call__(self, img, target):
@@ -42,7 +46,8 @@ class ResizeTransform:
 
     # resize fn to resize the shorter side of the image to a specified size while maintaining the aspect ratio, and also update the annotation dictionary with the new dimensions of the image.
     def resize_shorter_side(self, img, target):
-        w, h = img.size
+        h, w = img.size
+        annotation_dict = copy.deepcopy(target)
 
         scale = self.short_side / min(w, h)
         if scale * max(w, h) > self.max_side:
@@ -51,10 +56,10 @@ class ResizeTransform:
         new_w = int(w * scale)
         new_h = int(h * scale)
 
-        target["size"]["new_width"] = new_w
-        target["size"]["new_height"] = new_h
+        annotation_dict["size"]["new_width"] = new_w
+        annotation_dict["size"]["new_height"] = new_h
 
-        return TF.resize(img, (new_h, new_w)), target
+        return TF.resize(img, (new_h, new_w)), annotation_dict
 
 # Create a composed transform class to apply multiple transformations sequentially
 class ComposedTransform:

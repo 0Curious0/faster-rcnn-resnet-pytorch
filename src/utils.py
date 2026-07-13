@@ -13,18 +13,18 @@ def plot_image_with_annotations(img_array, annotation_dict, img_width=None, img_
         img_height = annotation_dict["size"]["height"]
 
     for obj in annotation_dict["objects"]:
-        x_c = obj["bndbox"]["x_c"]*img_width
-        y_c = obj["bndbox"]["y_c"]*img_height
-        width = obj["bndbox"]["width"]*img_width
-        height = obj["bndbox"]["height"]*img_height
+        x_min = obj["bndbox"]["x_min"]*img_width
+        y_min = obj["bndbox"]["y_min"]*img_height
+        x_max = obj["bndbox"]["x_max"]*img_width
+        y_max = obj["bndbox"]["y_max"]*img_height
 
-        xmin = x_c - (width / 2)
-        ymin = y_c - (height / 2)
+        width = x_max - x_min
+        height = y_max - y_min
 
-        rect = patches.Rectangle((xmin, ymin), width, height, linewidth=2, edgecolor='r', facecolor='none')
+        rect = patches.Rectangle((x_min, y_min), width, height, linewidth=2, edgecolor='r', facecolor='none')
         ax.add_patch(rect)
 
-        ax.text(xmin, ymin - 5, obj["name"], color='r', fontsize=12, weight='bold')
+        ax.text(x_min, y_min - 5, obj["name"], color='r', fontsize=12, weight='bold')
 
     plt.show()
 
@@ -54,8 +54,8 @@ def display_random_images_with_annotations(dataset,
     random_indices = random.sample(range(len(dataset)), num_images)
 
     for idx in random_indices:
-        img_array, annotation_dict = dataset[idx]
+        img_tensor, annotation_dict = dataset[idx]
         
-        plot_image_with_annotations(img_array.permute(1, 2, 0).numpy(), annotation_dict)
-        
+        plot_image_with_annotations(img_tensor.permute(1, 2, 0).numpy(), annotation_dict, img_width=img_tensor.shape[2], img_height=img_tensor.shape[1])
+
 
