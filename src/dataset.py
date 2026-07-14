@@ -49,19 +49,20 @@ def collate_fn(batch):
     gt_labels = []
 
     for img, annotation in zip(imgs, annotations):
-        pad_height = max_height - img.shape[1]
-        pad_width = max_width - img.shape[2]
+        img_height, img_width = img.shape[1], img.shape[2]
+        pad_height = max_height - img_height
+        pad_width = max_width - img_width
 
-        img_sizes_before_pad.append((img.shape[1], img.shape[2]))  # Store original height and width
+        img_sizes_before_pad.append((img_height, img_width))  # Store original height and width
 
         padded_img = nn.functional.pad(img, (0, pad_width, 0, pad_height), mode='constant', value=0)
         padded_imgs.append(padded_img)
 
         boxes = torch.tensor([
-            [obj["bndbox"]["x_min"], 
-             obj["bndbox"]["y_min"], 
-             obj["bndbox"]["x_max"], 
-             obj["bndbox"]["y_max"]]
+            [obj["bndbox"]["x_min"]* img_width, 
+             obj["bndbox"]["y_min"]* img_height, 
+             obj["bndbox"]["x_max"]* img_width, 
+             obj["bndbox"]["y_max"]* img_height]
              for obj in annotation["objects"]], dtype=torch.float32)
         
         labels = torch.tensor([obj["class_idx"] for obj in annotation["objects"]], dtype=torch.int64)
