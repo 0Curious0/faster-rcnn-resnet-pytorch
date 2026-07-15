@@ -2,6 +2,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from src.dataset import VOC_CLASSES
 
 def plot_image_with_annotations(img_array, annotation_dict, img_width=None, img_height=None):
     fig, ax = plt.subplots(1)
@@ -59,3 +60,25 @@ def display_random_images_with_annotations(dataset,
         plot_image_with_annotations(img_tensor.permute(1, 2, 0).numpy(), annotation_dict, img_width=img_tensor.shape[2], img_height=img_tensor.shape[1])
 
 
+
+def display_random_batch_images(batch_images, batch_labels, batch_boxes, num_images=4):
+    fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
+    for i in range(num_images):
+        idx = random.randint(0, len(batch_images) - 1)
+        img = batch_images[idx].permute(1, 2, 0).cpu().numpy()  # Convert to HWC format and move to CPU
+        boxes = batch_boxes[idx].cpu().numpy()
+        labels = batch_labels[idx].cpu().numpy()
+
+        axes[i].imshow(img)
+        axes[i].set_title(f"Image {idx}")
+        axes[i].axis('off')
+
+        for j, box in enumerate(boxes):
+            x1, y1, x2, y2 = box
+            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, color='red', linewidth=2)
+            axes[i].add_patch(rect)
+
+            axes[i].text(x1, y1 - 5, VOC_CLASSES[labels[j]], color='r', fontsize=12, weight='bold')
+
+    plt.tight_layout()
+    plt.show()
