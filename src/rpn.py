@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision.ops as ops
 
 class RPN_Head(nn.Module):
     def __init__(self, in_channels, mid_channels):
@@ -84,6 +85,7 @@ class RPN_Loss(nn.Module):
 
     def forward(self, batch_cls_logits, batch_box_deltas, batch_anchors, batch_gt_boxes, img_sizes_before_pad):
         batch_size = batch_cls_logits.shape[0]
+
 
         total_cls_loss = 0.0
         total_reg_loss = 0.0
@@ -239,3 +241,138 @@ class RPN_Loss(nn.Module):
         iou_matrix = inter_area / union_area
         
         return iou_matrix
+
+
+class RegionProposalNetwork(nn.Module):
+    def __init__(self, in_channels, mid_channels):
+        super(RegionProposalNetwork, self).__init__()
+        self.rpn_head = RPN_Head(in_channels, mid_channels)
+
+    def forward(self, feature_map, batch_img_height=None,  batch_img_width=None, img_sizes_before_pad=None):
+        batch_cls_logits, batch_box_deltas, batch_anchors = self.rpn_head(feature_map, batch_img_height=batch_img_height, batch_img_width=batch_img_width)
+        print(batch_cls_logits.shape, batch_box_deltas.shape, batch_anchors.shape)
+
+        batch_size = batch_cls_logits.shape[0]
+
+        scores_list = []
+        boxes_list = []
+
+        for i in range(batch_size):
+            img_height, img_width = img_sizes_before_pad[i]
+
+            cls_logits = batch_cls_logits[i]
+            box_deltas = batch_box_deltas[i]
+            anchors = batch_anchors[i]
+
+            scores = nn.functional.softmax(cls_logits, dim=-1)[:, 1]  # Get the foreground class scores for each box
+            print(f"Scores shape: {scores.shape}")
+
+            decoded_boxes = self.decode_box_deltas(anchors, box_deltas)
+
+            clipped_boxes = self.clip_boxes_to_image(decoded_boxes, img_height, img_width)
+
+            filtered_boxes, filtered_scores = self.filter_small_boxes(scores, clipped_boxes, min_size=16)
+            print(f"Filtered boxes shape: {filtered_boxes.shape}, Filtered scores shape: {filtered_scores.shape}")
+
+            print(decoded_boxes.device, anchors.device, box_deltas.device)
+
+            pre_nms_top_n_boxes, pre_nms_top_n_scores = self.pre_nms_top_n(filtered_boxes, filtered_scores, pre_nms_top_n=6000)
+
+            post_nms_indices = self.nms(pre_nms_top_n_boxes, pre_nms_top_n_scores, iou_threshold=0.7)
+
+            post_nms_top_n_boxes, post_nms_top_n_scores = self.post_nms_top_n(pre_nms_top_n_boxes, pre_nms_top_n_scores, post_nms_indices, post_nms_top_n=300)
+
+            scores_list.append(post_nms_top_n_scores)
+            boxes_list.append(post_nms_top_n_boxes)
+
+        return scores_list, boxes_list
+
+    # Decoding box deltas to get the final bounding boxes per img
+    def decode_box_deltas(self, anchors, box_deltas):
+        # Decode the predicted box deltas to get the final bounding boxes
+        # anchors: [num_anchors, 4], box_deltas: [num_anchors, 4]
+        # Returns: decoded_boxes of shape [num_anchors, 4]
+
+        xc_a, yc_a, w_a, h_a = anchors[:, 0], anchors[:, 1], anchors[:, 2], anchors[:, 3]
+        dx, dy, dw, dh = box_deltas[:, 0], box_deltas[:, 1], box_deltas[:, 2], box_deltas[:, 3]
+
+        # Apply the inverse of the encoding transformation
+        xc = dx * w_a + xc_a
+        yc = dy * h_a + yc_a
+        w = torch.exp(dw) * w_a
+        h = torch.exp(dh) * h_a
+
+        # Convert back to (xmin, ymin, xmax, ymax) format
+        xmin = xc - w / 2
+        ymin = yc - h / 2
+        xmax = xc + w / 2
+        ymax = yc + h / 2
+
+        decoded_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
+        return decoded_boxes
+    
+    # Clip the decoded boxes to ensure they are within the image boundaries per img
+    def clip_boxes_to_image(self, decoded_boxes, img_height, img_width):
+        # Clip the decoded boxes to ensure they are within the image boundaries
+        # decoded_boxes: [num_anchors, 4]
+        # Returns: clipped_boxes of shape [num_anchors, 4]
+
+        xmin = torch.clamp(decoded_boxes[:, 0], min=0, max=img_width - 1)
+        ymin = torch.clamp(decoded_boxes[:, 1], min=0, max=img_height - 1)
+        xmax = torch.clamp(decoded_boxes[:, 2], min=0, max=img_width - 1)
+        ymax = torch.clamp(decoded_boxes[:, 3], min=0, max=img_height - 1)
+
+        clipped_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
+        return clipped_boxes
+    
+    def filter_small_boxes(self, scores, decoded_boxes, min_size=16):
+        # Filter out boxes that are smaller than a specified minimum size
+        # decoded_boxes: [num_anchors, 4]
+        # Returns: filtered_boxes of shape [num_filtered_anchors, 4]
+
+        widths = decoded_boxes[:, 2] - decoded_boxes[:, 0]
+        heights = decoded_boxes[:, 3] - decoded_boxes[:, 1]
+
+        keep_indices = (widths >= min_size) & (heights >= min_size)
+        filtered_boxes = decoded_boxes[keep_indices]
+
+        # also need to remove the scores corresponding to the filtered boxes, but that will be handled in the pre_nms_top_n function
+        filtered_scores = scores[keep_indices]  # Assuming scores is available in the context where this function is called
+
+        return filtered_boxes, filtered_scores
+
+    # Get the top N boxes based on their scores before applying NMS per img
+    def pre_nms_top_n(self, decoded_boxes, scores, pre_nms_top_n=6000):
+        # Select the top N boxes based on their scores before applying NMS
+        # decoded_boxes: [num_anchors, 4], scores: [num_anchors]
+        # Returns: top_decoded_boxes of shape [pre_nms_top_n, 4], top_scores of shape [pre_nms_top_n]
+
+        # scores = nn.functional.softmax(scores, dim=-1)[:1]  # Get the foreground class scores for each box, since 1:obj, 0: background, therefore [:1] gives the foreground class scores for each box
+
+        top_scores, top_indices = torch.topk(scores, k=min(pre_nms_top_n, scores.size(0)))
+        top_decoded_boxes = decoded_boxes[top_indices]
+
+        return top_decoded_boxes, top_scores
+    
+    def nms(self, decoded_boxes, scores, iou_threshold=0.7):
+        # Apply Non-Maximum Suppression (NMS) to remove overlapping boxes
+        # decoded_boxes: [num_anchors, 4], scores: [num_anchors]
+        # Returns: keep_indices of shape [num_kept_anchors]
+
+        keep_indices = ops.nms(decoded_boxes, scores, iou_threshold)
+        return keep_indices
+    
+    def post_nms_top_n(self, bboxes, scores, keep_indices, post_nms_top_n=300):
+        # Select the top N boxes after applying NMS
+        # decoded_boxes_post_nms: [num_kept_anchors, 4], scores_post_nms: [num_kept_anchors]
+        # Returns: final_decoded_boxes of shape [post_nms_top_n, 4], final_scores of shape [post_nms_top_n]
+
+        scores_post_nms = scores[keep_indices]
+        boxes_post_nms = bboxes[keep_indices]
+
+        top_scores_post_nms, top_indices_post_nms = torch.topk(scores_post_nms, k=min(post_nms_top_n, scores_post_nms.size(0)))
+        final_decoded_boxes = boxes_post_nms[top_indices_post_nms]
+
+        return final_decoded_boxes, top_scores_post_nms
+
+    
