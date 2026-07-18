@@ -243,10 +243,15 @@ class RPN_Loss(nn.Module):
         return iou_matrix
 
 
+import torchvision.ops as ops
+
 class RegionProposalNetwork(nn.Module):
-    def __init__(self, in_channels, mid_channels):
+    def __init__(self, rpn_head=None,  in_channels=1024, mid_channels=512):
         super(RegionProposalNetwork, self).__init__()
-        self.rpn_head = RPN_Head(in_channels, mid_channels)
+        if rpn_head is not None:
+            self.rpn_head = rpn_head
+        else:
+            self.rpn_head = RPN_Head(in_channels, mid_channels)
 
     def forward(self, feature_map, batch_img_height=None,  batch_img_width=None, img_sizes_before_pad=None):
         batch_cls_logits, batch_box_deltas, batch_anchors = self.rpn_head(feature_map, batch_img_height=batch_img_height, batch_img_width=batch_img_width)
@@ -265,16 +270,12 @@ class RegionProposalNetwork(nn.Module):
             anchors = batch_anchors[i]
 
             scores = nn.functional.softmax(cls_logits, dim=-1)[:, 1]  # Get the foreground class scores for each box
-            print(f"Scores shape: {scores.shape}")
 
             decoded_boxes = self.decode_box_deltas(anchors, box_deltas)
 
             clipped_boxes = self.clip_boxes_to_image(decoded_boxes, img_height, img_width)
 
             filtered_boxes, filtered_scores = self.filter_small_boxes(scores, clipped_boxes, min_size=16)
-            print(f"Filtered boxes shape: {filtered_boxes.shape}, Filtered scores shape: {filtered_scores.shape}")
-
-            print(decoded_boxes.device, anchors.device, box_deltas.device)
 
             pre_nms_top_n_boxes, pre_nms_top_n_scores = self.pre_nms_top_n(filtered_boxes, filtered_scores, pre_nms_top_n=6000)
 
@@ -374,5 +375,3 @@ class RegionProposalNetwork(nn.Module):
         final_decoded_boxes = boxes_post_nms[top_indices_post_nms]
 
         return final_decoded_boxes, top_scores_post_nms
-
-    

@@ -61,13 +61,12 @@ def display_random_images_with_annotations(dataset,
 
 
 
-def display_random_batch_images(batch_images, batch_labels, batch_boxes, num_images=4):
+def display_random_batch_images(batch_images, batch_boxes, batch_labels=None, num_images=4):
     fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
     for i in range(num_images):
         idx = random.randint(0, len(batch_images) - 1)
         img = batch_images[idx].permute(1, 2, 0).cpu().numpy()  # Convert to HWC format and move to CPU
         boxes = batch_boxes[idx].cpu().numpy()
-        labels = batch_labels[idx].cpu().numpy()
 
         axes[i].imshow(img)
         axes[i].set_title(f"Image {idx}")
@@ -78,7 +77,10 @@ def display_random_batch_images(batch_images, batch_labels, batch_boxes, num_ima
             rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, color='red', linewidth=2)
             axes[i].add_patch(rect)
 
-            axes[i].text(x1, y1 - 5, VOC_CLASSES[labels[j]], color='r', fontsize=12, weight='bold')
+            if batch_labels is not None:
+                labels = batch_labels[idx].cpu().numpy()
+
+                axes[i].text(x1, y1 - 5, VOC_CLASSES[labels[j]], color='r', fontsize=12, weight='bold')
 
     plt.tight_layout()
     plt.show()

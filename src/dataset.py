@@ -125,8 +125,8 @@ def get_voc_img_paths_train():
     voc2007_img_path = voc2007_path / "JPEGImages"
     voc2012_img_path = voc2012_path / "JPEGImages"
 
-    voc2007_trainval = voc2007_path / "ImageSets" / "Layout" / "trainval.txt"
-    voc2012_trainval = voc2012_path / "ImageSets" / "Layout" / "trainval.txt"
+    voc2007_trainval = voc2007_path / "ImageSets" / "Main" / "trainval.txt"
+    voc2012_trainval = voc2012_path / "ImageSets" / "Main" / "trainval.txt"
 
     with open(voc2007_trainval, "r") as f:
         voc2007_img_paths_train = [voc2007_img_path / (line.strip() + ".jpg") for line in f.readlines()]
@@ -147,8 +147,8 @@ def get_voc_img_paths_test():
     voc2007_img_path = voc2007_path / "JPEGImages"
     voc2012_img_path = voc2012_path / "JPEGImages"
 
-    voc2007_test = voc2007_path / "ImageSets" / "Layout" / "test.txt"
-    voc2012_test = voc2012_path / "ImageSets" / "Layout" / "test.txt"
+    voc2007_test = voc2007_path / "ImageSets" / "Main" / "test.txt"
+    voc2012_test = voc2012_path / "ImageSets" / "Main" / "test.txt"
 
     with open(voc2007_test, "r") as f:
         voc2007_img_paths_test = [voc2007_img_path / (line.strip() + ".jpg") for line in f.readlines()]
