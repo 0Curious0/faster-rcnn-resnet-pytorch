@@ -39,11 +39,11 @@ class RPN_Head(nn.Module):
     def generate_anchors(self, feature_map):
         # This function should generate anchors based on the feature map size and predefined scales/aspect ratios
 
-        batch_size, _, width, height = feature_map.shape
+        batch_size, _, height, width = feature_map.shape
 
         # Calculating stride for the feature map relative to the input image
-        total_stride_x = self.img_height // height   
-        total_stride_y = self.img_width // width    
+        total_stride_x = self.img_width // width   
+        total_stride_y = self.img_height // height    
 
         # For each position in the feature map, calculate the center of the anchor box
         # center_x = (x_coord * total_stride_x) + (0.5 * total_stride_x)
@@ -59,6 +59,7 @@ class RPN_Head(nn.Module):
         # Converting grid positions to the scale from the feature map to the image size
         grid_x = grid_x * total_stride_x
         grid_y = grid_y * total_stride_y
+
 
         # Now, for each center position, we need to generate anchors based on the scales and aspect ratios
         widths = self.scales.view(-1, 1) * torch.sqrt(self.ratios).view(1, -1)
@@ -255,7 +256,6 @@ class RegionProposalNetwork(nn.Module):
 
     def forward(self, feature_map, batch_img_height=None,  batch_img_width=None, img_sizes_before_pad=None):
         batch_cls_logits, batch_box_deltas, batch_anchors = self.rpn_head(feature_map, batch_img_height=batch_img_height, batch_img_width=batch_img_width)
-        print(batch_cls_logits.shape, batch_box_deltas.shape, batch_anchors.shape)
 
         batch_size = batch_cls_logits.shape[0]
 
@@ -303,11 +303,16 @@ class RegionProposalNetwork(nn.Module):
         w = torch.exp(dw) * w_a
         h = torch.exp(dh) * h_a
 
+        print("anchors (xc_a, yc_a, w_a, h_a):", xc_a, yc_a, w_a, h_a)
+        print("xc, yc, w, h:", xc, yc, w, h)
+
         # Convert back to (xmin, ymin, xmax, ymax) format
         xmin = xc - w / 2
         ymin = yc - h / 2
         xmax = xc + w / 2
         ymax = yc + h / 2
+
+        print("xmin, ymin, xmax, ymax:", xmin, ymin, xmax, ymax)
 
         decoded_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
         return decoded_boxes
@@ -322,6 +327,8 @@ class RegionProposalNetwork(nn.Module):
         ymin = torch.clamp(decoded_boxes[:, 1], min=0, max=img_height - 1)
         xmax = torch.clamp(decoded_boxes[:, 2], min=0, max=img_width - 1)
         ymax = torch.clamp(decoded_boxes[:, 3], min=0, max=img_height - 1)
+
+        print("Clipped boxes:", xmin, ymin, xmax, ymax)
 
         clipped_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
         return clipped_boxes
