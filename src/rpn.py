@@ -303,16 +303,11 @@ class RegionProposalNetwork(nn.Module):
         w = torch.exp(dw) * w_a
         h = torch.exp(dh) * h_a
 
-        print("anchors (xc_a, yc_a, w_a, h_a):", xc_a, yc_a, w_a, h_a)
-        print("xc, yc, w, h:", xc, yc, w, h)
-
         # Convert back to (xmin, ymin, xmax, ymax) format
         xmin = xc - w / 2
         ymin = yc - h / 2
         xmax = xc + w / 2
         ymax = yc + h / 2
-
-        print("xmin, ymin, xmax, ymax:", xmin, ymin, xmax, ymax)
 
         decoded_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
         return decoded_boxes
@@ -327,8 +322,6 @@ class RegionProposalNetwork(nn.Module):
         ymin = torch.clamp(decoded_boxes[:, 1], min=0, max=img_height - 1)
         xmax = torch.clamp(decoded_boxes[:, 2], min=0, max=img_width - 1)
         ymax = torch.clamp(decoded_boxes[:, 3], min=0, max=img_height - 1)
-
-        print("Clipped boxes:", xmin, ymin, xmax, ymax)
 
         clipped_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
         return clipped_boxes
