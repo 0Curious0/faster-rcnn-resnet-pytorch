@@ -363,7 +363,7 @@ class RegionProposalNetwork(nn.Module):
         keep_indices = ops.nms(decoded_boxes, scores, iou_threshold)
         return keep_indices
     
-    def post_nms_top_n(self, bboxes, scores, keep_indices, post_nms_top_n=300):
+    def post_nms_top_n(self, bboxes, scores, keep_indices, post_nms_top_n=2000):
         # Select the top N boxes after applying NMS
         # decoded_boxes_post_nms: [num_kept_anchors, 4], scores_post_nms: [num_kept_anchors]
         # Returns: final_decoded_boxes of shape [post_nms_top_n, 4], final_scores of shape [post_nms_top_n]
