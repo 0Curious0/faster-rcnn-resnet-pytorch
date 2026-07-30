@@ -54,7 +54,7 @@ class RPN_Head(nn.Module):
         grid_y = torch.arange(height).float() + 0.5
 
         # Create a meshgrid of x_center, y_center positions for each anchor for each value of width and height in feature map
-        grid_x, grid_y = torch.meshgrid(grid_x, grid_y, indexing='ij')
+        grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing='ij')      # (H, W) format
 
         # Converting grid positions to the scale from the feature map to the image size
         grid_x = grid_x * total_stride_x
@@ -67,7 +67,7 @@ class RPN_Head(nn.Module):
 
 
         centres = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(dim=-2)  # Shape: [height, width, 1, 2]
-        sizes = torch.stack((heights.flatten(), widths.flatten()), dim=-1)[None, None, : ]  # Shape: [1, 1, num_scales * num_ratios, 2]
+        sizes = torch.stack((widths.flatten(), heights.flatten()), dim=-1)[None, None, : ]  # Shape: [1, 1, num_scales * num_ratios, 2]
 
         anchors = torch.cat((centres.expand(-1, -1, sizes.shape[2], -1), sizes.expand(centres.shape[0], centres.shape[1], -1, -1)), dim=-1)  # Shape: [height, width, num_anchors, 4]
         anchors = anchors.view(-1, 4)  # Flatten to [num_anchors_total, 4]
@@ -81,8 +81,6 @@ class RPN_Head(nn.Module):
 class RPN_Loss(nn.Module):
     def __init__(self):
         super(RPN_Loss, self).__init__()
-        self.cls_loss_fn = nn.CrossEntropyLoss()
-        self.reg_loss_fn = nn.SmoothL1Loss()
 
     def forward(self, batch_cls_logits, batch_box_deltas, batch_anchors, batch_gt_boxes, img_sizes_before_pad):
         batch_size = batch_cls_logits.shape[0]
@@ -107,12 +105,22 @@ class RPN_Loss(nn.Module):
             cls_logits = cls_logits[inside_indices]
             box_deltas = box_deltas[inside_indices]
 
-            anchor_labels, matched_gt_indices = self.anchor_labelling(anchors, gt_boxes)
+            if gt_boxes.shape[0] == 0:
+            # No objects in this image: every anchor is negative by definition,
+            # there's nothing to regress toward.
+                anchor_labels = torch.full((anchors.shape[0],), -1, dtype=torch.long, device=anchors.device)
+                matched_gt_indices = torch.zeros((anchors.shape[0],), dtype=torch.long, device=anchors.device)  #unused placeholder
+            else:
+                anchor_labels, matched_gt_indices = self.anchor_labelling(anchors, gt_boxes)
 
             sample_mask, sampled_pos_idx, sampled_neg_idx = self.create_sample_mask_per_img(anchor_labels)
 
             cls_loss = self.cls_loss_fn_per_img(cls_logits, anchor_labels, sample_mask)
-            reg_loss = self.reg_loss_fn_per_img(box_deltas, gt_boxes, anchors, sampled_pos_idx, matched_gt_indices)  # Assuming gt_boxes are the regression targets
+
+            if sampled_pos_idx.numel() == 0:
+                reg_loss = torch.tensor(0.0, device=box_deltas.device, dtype=box_deltas.dtype)
+            else:
+                reg_loss = self.reg_loss_fn_per_img(box_deltas, gt_boxes, anchors, sampled_pos_idx, matched_gt_indices)
 
             total_cls_loss += cls_loss
             total_reg_loss += reg_loss
@@ -145,8 +153,8 @@ class RPN_Loss(nn.Module):
 
         gt_boxes_centered = self.corners_to_center(selected_gt_boxes)
 
-        xc_a, yc_a, h_a, w_a = anchors[:, 0], anchors[:, 1], anchors[:, 2], anchors[:, 3]
-        gt_xc, gt_yc, gt_h, gt_w = gt_boxes_centered[:, 0], gt_boxes_centered[:, 1], gt_boxes_centered[:, 2], gt_boxes_centered[:, 3]
+        xc_a, yc_a, w_a, h_a = anchors[:, 0], anchors[:, 1], anchors[:, 2], anchors[:, 3]
+        gt_xc, gt_yc, gt_w, gt_h = gt_boxes_centered[:, 0], gt_boxes_centered[:, 1], gt_boxes_centered[:, 2], gt_boxes_centered[:, 3]
 
         # Calculate the regression targets (deltas) for the selected anchors
         target_dx = (gt_xc - xc_a) / w_a
@@ -198,14 +206,14 @@ class RPN_Loss(nn.Module):
 
     def anchors_inside_image(self, anchors, img_height, img_width):
         # Check if anchors are inside the image boundaries
-        xc, yc, h, w = anchors[:, 0], anchors[:, 1], anchors[:, 2], anchors[:, 3]
+        xc, yc, w, h = anchors[:, 0], anchors[:, 1], anchors[:, 2], anchors[:, 3]
 
         x1 = xc - w / 2
         y1 = yc - h / 2
         x2 = xc + w / 2
         y2 = yc + h / 2
 
-        inside_indices = (0<=x1) & (0<=y1) & (x2 < img_width) & (y2 < img_height)           # anchors[:, 0] is xc, anchors[:, 1] is yc, anchors[:, 2] is h, anchors[:, 3] is w
+        inside_indices = (0<=x1) & (0<=y1) & (x2 <= img_width-1) & (y2 <= img_height-1)           # anchors[:, 0] is xc, anchors[:, 1] is yc, anchors[:, 2] is w, anchors[:, 3] is h
         return inside_indices
     
     def compute_iou_matrix(self, anchors, gt_boxes):
@@ -277,10 +285,14 @@ class RegionProposalNetwork(nn.Module):
 
             filtered_boxes, filtered_scores = self.filter_small_boxes(scores, clipped_boxes, min_size=16)
 
+            if filtered_boxes.shape[0] == 0:
+                # No proposals survived filtering for this image — return empty, well-shaped tensors
+                scores_list.append(torch.zeros((0,), device=feature_map.device))        # shape (0,) to not break further tensor operations in the pipeline
+                boxes_list.append(torch.zeros((0, 4), device=feature_map.device))        # shape (0, 4) to not break further tensor operations in the pipeline
+                continue
+
             pre_nms_top_n_boxes, pre_nms_top_n_scores = self.pre_nms_top_n(filtered_boxes, filtered_scores, pre_nms_top_n=6000)
-
             post_nms_indices = self.nms(pre_nms_top_n_boxes, pre_nms_top_n_scores, iou_threshold=0.7)
-
             post_nms_top_n_boxes, post_nms_top_n_scores = self.post_nms_top_n(pre_nms_top_n_boxes, pre_nms_top_n_scores, post_nms_indices, post_nms_top_n=300)
 
             scores_list.append(post_nms_top_n_scores)
