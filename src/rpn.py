@@ -146,7 +146,7 @@ class RPN_Loss(nn.Module):
         return torch.stack([x_c, y_c, w, h], dim=1)
 
 
-    def reg_loss_fn_per_img(self, box_deltas, gt_boxes, valid_anchors, sampled_pos_idx, matched_gt_indices):
+    def reg_loss_fn_per_img(self, box_deltas, gt_boxes, valid_anchors, sampled_pos_idx, matched_gt_indices, N_reg=2400):
         pred_box_deltas = box_deltas[sampled_pos_idx]
         selected_gt_boxes = gt_boxes[matched_gt_indices[sampled_pos_idx]]  # Select the corresponding gt_boxes for the sampled positive anchors
         anchors = valid_anchors[sampled_pos_idx]
@@ -164,7 +164,8 @@ class RPN_Loss(nn.Module):
 
         target_box_deltas = torch.stack((target_dx, target_dy, target_dw, target_dh), dim=1)
 
-        reg_loss = nn.functional.smooth_l1_loss(pred_box_deltas, target_box_deltas, reduction='mean')      # reduction='mean' to get the average loss over the selected samples i.e., divide by num_samples = Nreg
+        reg_loss = nn.functional.smooth_l1_loss(pred_box_deltas, target_box_deltas, reduction='sum')
+        reg_loss /= N_reg
         return reg_loss
 
     def create_sample_mask_per_img(self, anchor_labels, num_samples=256, pos_fraction=0.5):
