@@ -263,7 +263,10 @@ class RegionProposalNetwork(nn.Module):
         else:
             self.rpn_head = RPN_Head(in_channels, mid_channels)
 
-    def forward(self, feature_map, batch_img_height=None,  batch_img_width=None, img_sizes_before_pad=None):
+    def forward(self, feature_map, batch_img_height=None,  batch_img_width=None, img_sizes_before_pad=None, pre_nms_top_n=6000, post_nms_top_n=300):
+        # pre_nms_top_n: proposals kept per image (by score) before NMS.
+        # post_nms_top_n: proposals kept per image after NMS. Paper uses 2000 for
+        # Step-2 Fast R-CNN training and 300 for inference/eval; defaults to 300.
         batch_cls_logits, batch_box_deltas, batch_anchors = self.rpn_head(feature_map, batch_img_height=batch_img_height, batch_img_width=batch_img_width)
 
         batch_size = batch_cls_logits.shape[0]
@@ -292,9 +295,9 @@ class RegionProposalNetwork(nn.Module):
                 boxes_list.append(torch.zeros((0, 4), device=feature_map.device))        # shape (0, 4) to not break further tensor operations in the pipeline
                 continue
 
-            pre_nms_top_n_boxes, pre_nms_top_n_scores = self.pre_nms_top_n(filtered_boxes, filtered_scores, pre_nms_top_n=6000)
+            pre_nms_top_n_boxes, pre_nms_top_n_scores = self.pre_nms_top_n(filtered_boxes, filtered_scores, pre_nms_top_n=pre_nms_top_n)
             post_nms_indices = self.nms(pre_nms_top_n_boxes, pre_nms_top_n_scores, iou_threshold=0.7)
-            post_nms_top_n_boxes, post_nms_top_n_scores = self.post_nms_top_n(pre_nms_top_n_boxes, pre_nms_top_n_scores, post_nms_indices, post_nms_top_n=300)
+            post_nms_top_n_boxes, post_nms_top_n_scores = self.post_nms_top_n(pre_nms_top_n_boxes, pre_nms_top_n_scores, post_nms_indices, post_nms_top_n=post_nms_top_n)
 
             scores_list.append(post_nms_top_n_scores)
             boxes_list.append(post_nms_top_n_boxes)
