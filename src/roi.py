@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 
 class RoIPool(nn.Module):
-    def __init__(self, output_size):
+    def __init__(self, output_size, pooling_mode="loop"):
         super().__init__()
         self.output_size = output_size
+        self.pooling_mode = pooling_mode
+        self.adaptive_pool = nn.AdaptiveMaxPool2d(output_size)
 
     def forward(self, feature_maps, batch_proposals, batch_img_height, batch_img_width):
         channels = feature_maps.shape[1]
@@ -26,7 +28,11 @@ class RoIPool(nn.Module):
             pooled_proposals = []
             for proposal_coords in projected:
                 roi_feature_map = self._select_roi_feature_map(feature_map, proposal_coords)
-                pooled_proposals.append(self._max_pool_roi(roi_feature_map))
+                
+                if self.pooling_mode == "adaptive":
+                    pooled_proposals.append(self._max_pool_roi_adaptive(roi_feature_map))
+                else:
+                    pooled_proposals.append(self._max_pool_roi(roi_feature_map))
 
             pooled_batch.append(torch.stack(pooled_proposals, dim=0))  # [N_i, C, out_h, out_w]
 
@@ -84,3 +90,8 @@ class RoIPool(nn.Module):
                 pooled[:, ph, pw] = bin_region.amax(dim=(1, 2))  # max over the bin, per channel
 
         return pooled  # [C, out_h, out_w]
+
+    def _max_pool_roi_adaptive(self, roi_feature_map):
+        # Use adaptive pooling to directly get the desired output size, adding 1 dim for batch_processing
+        pooled = self.adaptive_pool(roi_feature_map.unsqueeze(0))
+        return pooled.squeeze(0)  # [C, out_h, out_w]
