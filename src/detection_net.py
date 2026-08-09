@@ -234,3 +234,107 @@ class DetectionLoss(nn.Module):
         # Based on the Dataset, the mean of target_deltas is appx 0 and std dev (0.1, 0.1, 0.2, 0.2)
         # So, by (target_deltas - 0)/std we are normalizing the regression targets to have zero mean and unit variance, as described in the Fast R-CNN paper.
         return target_deltas / std
+
+
+class DetectionNet(nn.Module):
+    def __init__(self, detection_head, background_label=20, delta_std=(0.1, 0.1, 0.2, 0.2)):
+        super().__init__()
+
+        self.detection_head = detection_head
+        self.background_label = background_label
+        self.delta_std = delta_std
+
+    def corners_to_center(self, boxes):
+        # (x1, y1, x2, y2) -> (x_c, y_c, w, h)
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        w = x2 - x1
+        h = y2 - y1
+        x_c = x1 + w / 2
+        y_c = y1 + h / 2
+        return torch.stack([x_c, y_c, w, h], dim=1)
+
+    def select_foreground(self, cls_logits):
+        softmax_scores = nn.functional.softmax(cls_logits, dim=-1)
+        scores, predicted_labels = softmax_scores.max(dim=-1)
+        foreground_mask = predicted_labels != self.background_label
+
+        return predicted_labels, scores, foreground_mask
+
+    def decode_box_deltas(self, proposals_center, box_deltas):
+        # proposals_center: [N, 4] (x_c, y_c, w, h)
+        # box_deltas: [N, 4] (dx, dy, dw, dh), normalized by self.delta_std (Fast R-CNN convention, matches DetectionLoss.encode_box_targets) -- un-normalize before applying the inverse transform
+        std = torch.tensor(self.delta_std, dtype=box_deltas.dtype, device=box_deltas.device)
+        dx, dy, dw, dh = (box_deltas * std).unbind(dim=1)
+
+        xc_p, yc_p, w_p, h_p = proposals_center[:, 0], proposals_center[:, 1], proposals_center[:, 2], proposals_center[:, 3]
+
+        xc = dx * w_p + xc_p
+        yc = dy * h_p + yc_p
+        w = torch.exp(dw) * w_p
+        h = torch.exp(dh) * h_p
+
+        xmin = xc - w / 2
+        ymin = yc - h / 2
+        xmax = xc + w / 2
+        ymax = yc + h / 2
+
+        decoded_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
+        return decoded_boxes
+
+    def clip_boxes_to_image(self, decoded_boxes, img_height, img_width):
+        # decoded_boxes: [N, 4] CORNER absolute px -- same clamp as RegionProposalNetwork.clip_boxes_to_image
+        xmin = torch.clamp(decoded_boxes[:, 0], min=0, max=img_width - 1)
+        ymin = torch.clamp(decoded_boxes[:, 1], min=0, max=img_height - 1)
+        xmax = torch.clamp(decoded_boxes[:, 2], min=0, max=img_width - 1)
+        ymax = torch.clamp(decoded_boxes[:, 3], min=0, max=img_height - 1)
+
+        clipped_boxes = torch.stack((xmin, ymin, xmax, ymax), dim=1)
+        return clipped_boxes
+
+    def forward(self, rpn_proposals, pooled_proposals, img_sizes_before_pad):
+        # rpn_proposals:    list of B x [N_i, 4] CORNER absolute px, from RegionProposalNetwork
+        # pooled_proposals: list of B x [N_i, 1024, 7, 7], RoIPool output for the same proposals
+        # img_sizes_before_pad: list of B x (img_height, img_width), pre-padding size per image, for clipping
+        batch_cls_logits, batch_box_deltas = self.detection_head(pooled_proposals)
+
+        batch_size = len(rpn_proposals)
+
+        labels_list = []
+        scores_list = []
+        boxes_list = []
+
+        for i in range(batch_size):
+            img_height, img_width = img_sizes_before_pad[i]
+
+            cls_logits = batch_cls_logits[i]
+            box_deltas = batch_box_deltas[i]
+            proposals = rpn_proposals[i]
+
+            predicted_labels, scores, foreground_mask = self.select_foreground(cls_logits)
+
+            if foreground_mask.sum() == 0:
+                # Every proposal predicted background for this image
+                labels_list.append(predicted_labels.new_zeros((0,)))
+                scores_list.append(scores.new_zeros((0,)))
+                boxes_list.append(proposals.new_zeros((0, 4)))
+                continue
+
+            fg_labels = predicted_labels[foreground_mask]
+            fg_scores = scores[foreground_mask]
+            fg_proposals = proposals[foreground_mask]
+
+            # box_deltas is [N_i, num_classes * 4] class-specific -- gather each proposal's
+            # deltas for its own predicted class only, same pattern as DetectionLoss.forward
+            num_classes = box_deltas.shape[1] // 4
+            fg_box_deltas = box_deltas[foreground_mask].view(-1, num_classes, 4)
+            predicted_deltas = fg_box_deltas[torch.arange(fg_labels.numel(), device=fg_labels.device), fg_labels]
+
+            proposals_center = self.corners_to_center(fg_proposals)
+            decoded_boxes = self.decode_box_deltas(proposals_center, predicted_deltas)
+            clipped_boxes = self.clip_boxes_to_image(decoded_boxes, img_height, img_width)
+
+            labels_list.append(fg_labels)
+            scores_list.append(fg_scores)
+            boxes_list.append(clipped_boxes)
+
+        return labels_list, scores_list, boxes_list
