@@ -55,6 +55,33 @@ Convention used: positive = `1`, negative = `-1`, ignore = `0`.
 5. Keep Post-NMS-Top-N Boxes
 
 
+## RoI Pooling
+
+- `RoIPool` projects each proposal (corner format, absolute px) onto the shared feature map using `stride = image_dim // feature_map_dim`, then max-pools each projected region to a fixed 7×7 output — the original Fast R-CNN "RoI Pooling" (quantized max-pool over per-bin `floor`/`ceil` boundaries), not the later RoIAlign (Mask R-CNN's bilinear-interpolated variant).
+- Two implementations of the same operation: a manual `"loop"` mode (default) that computes each bin's boundaries explicitly (every bin covers ≥1 pixel even when a proposal is smaller than the output size), and an `"adaptive"` mode via `nn.AdaptiveMaxPool2d`.
+
+## Detection Head (Fast R-CNN)
+
+- Reuses `conv5_x` of an ImageNet-pretrained ResNet-50 as the region classifier — the shared backbone is split at `conv4_x`/`conv5_x`: `conv4_x`'s output is the shared/RPN feature map, `conv5_x` becomes the per-RoI head. BatchNorm affine params are frozen and `.train()` is overridden to keep those BN layers in `eval()` mode (freezing `requires_grad` alone doesn't stop `.train()` from reactivating BN running-stat updates).
+- Global average pool over `conv5_x`'s output, then two sibling `nn.Linear` heads:
+  - Classification: `num_classes + 1` logits (VOC's 20 object classes + 1 background class).
+  - Regression: `num_classes * 4` box deltas — **class-specific**, unlike the RPN's class-agnostic deltas.
+
+## Detection Loss
+
+- Classification: cross-entropy over the sampled proposals (21-way: 20 VOC classes + background).
+- Regression: Smooth L1, computed only on the positive proposals' predicted deltas **for their own ground-truth class**, gathered out of the class-specific `[N, num_classes, 4]` delta tensor — summed, then divided by the number of *sampled* proposals for that image (not just the positive count).
+- Regression targets are `(t_x, t_y, t_w, t_h)` deltas (same form as the RPN's), normalized by `delta_std = (0.1, 0.1, 0.2, 0.2)` — the Fast R-CNN paper's convention for zero-mean/unit-variance targets. **Unlike the RPN's unnormalized deltas** — any code decoding detection-head deltas back into boxes must multiply by `delta_std` first, or the decoded boxes come out silently near-zero-offset.
+- Combined: `loss = cls_loss + λ * reg_loss`, λ = 1 (Fast R-CNN's default balancing weight — unlike the RPN's λ = 10).
+
+## Detection Net (Inference Decode)
+
+- Wraps a trained `DetectionHead` for test-time use: given `RegionProposalNetwork` proposals and their `RoIPool`-ed features, runs the batched detection head once, then per image:
+  1. Predicted class = argmax of the softmax'd class logits; proposals predicted background are dropped.
+  2. Each surviving proposal's box deltas for **its own predicted class** are gathered out of the class-specific delta tensor, un-normalized by `delta_std`, and decoded back to boxes with the same center-format inverse transform as the RPN's decoder.
+  3. Boxes are clipped to the image's pre-padding size.
+- Does **not** run NMS itself — final cross-proposal NMS (class-agnostic, IoU 0.5) is still applied separately at test time, not yet part of this class.
+
 ## Training Protocol (4-Step Alternating Training, per the paper)
 
 | Step | What's trained | Backbone |
