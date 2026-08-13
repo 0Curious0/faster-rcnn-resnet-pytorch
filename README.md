@@ -77,10 +77,16 @@ Convention used: positive = `1`, negative = `-1`, ignore = `0`.
 ## Detection Net (Inference Decode)
 
 - Wraps a trained `DetectionHead` for test-time use: given `RegionProposalNetwork` proposals and their `RoIPool`-ed features, runs the batched detection head once, then per image:
-  1. Predicted class = argmax of the softmax'd class logits; proposals predicted background are dropped.
-  2. Each surviving proposal's box deltas for **its own predicted class** are gathered out of the class-specific delta tensor, un-normalized by `delta_std`, and decoded back to boxes with the same center-format inverse transform as the RPN's decoder.
-  3. Boxes are clipped to the image's pre-padding size.
-- Does **not** run NMS itself — final cross-proposal NMS (class-agnostic, IoU 0.5) is still applied separately at test time, not yet part of this class.
+  1. Every `(proposal, foreground class)` pair whose softmax probability exceeds `score_thresh` (default 0.05) is emitted as a candidate — **not** just the argmax class. One proposal can therefore produce several detections, and a proposal whose highest-scoring class is background still contributes its foreground classes.
+  2. Each candidate's box deltas for **its own emitted class** are gathered out of the class-specific delta tensor, un-normalized by `delta_std`, and decoded back to boxes with the same center-format inverse transform as the RPN's decoder.
+  3. Boxes are clipped to the image's pre-padding size, then boxes that clipping collapsed to under `min_box_size` in either dimension are dropped.
+  4. Per-**class** NMS (`torchvision.ops.batched_nms`, IoU `nms_iou_thresh`, default 0.5), then a top-`max_detections_per_image` cap by score (default 100).
+
+### Why argmax was replaced
+
+The original decode kept only the argmax class per proposal and dropped the proposal when that was background. Measured on VOC2007 test, that emitted 16,819 detections against 14,976 GT boxes — 1.12 per object, where a standard Fast R-CNN emits 10–100× more — and capped mean recall at 0.613 while the RPN was supplying 80% proposal recall. Because 11-point AP scores `p_interp(t) = 0` for every `t` above the achieved recall, mAP was pinned at 0.5389 against a ceiling of 0.6046 that the recall alone imposed; precision was already running at 89% of that ceiling. The loss was objects that never became detections at all, not objects ranked badly.
+
+Per-class NMS (rather than class-agnostic) matters for the same metric: a `person` box must not suppress an overlapping `horse` box.
 
 ## Training Protocol (4-Step Alternating Training, per the paper)
 

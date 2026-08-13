@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision.ops as ops
 from torchvision.models import resnet50, ResNet50_Weights
 
 class DetectionHead(nn.Module):
@@ -237,12 +238,23 @@ class DetectionLoss(nn.Module):
 
 
 class DetectionNet(nn.Module):
-    def __init__(self, detection_head, background_label=20, delta_std=(0.1, 0.1, 0.2, 0.2)):
+    def __init__(self, detection_head, background_label=20, delta_std=(0.1, 0.1, 0.2, 0.2),
+                 score_thresh=0.05, nms_iou_thresh=0.5, max_detections_per_image=100,
+                 min_box_size=1.0):
         super().__init__()
 
         self.detection_head = detection_head
         self.background_label = background_label
         self.delta_std = delta_std
+
+        # Inference-time detection settings. score_thresh=0.05 and 100 detections per
+        # image are the Fast R-CNN evaluation conventions; both are deliberately low
+        # bars, since AP wants the full precision/recall curve rather than one
+        # conservative operating point.
+        self.score_thresh = score_thresh
+        self.nms_iou_thresh = nms_iou_thresh
+        self.max_detections_per_image = max_detections_per_image
+        self.min_box_size = min_box_size
 
     def corners_to_center(self, boxes):
         # (x1, y1, x2, y2) -> (x_c, y_c, w, h)
@@ -254,11 +266,14 @@ class DetectionNet(nn.Module):
         return torch.stack([x_c, y_c, w, h], dim=1)
 
     def select_foreground(self, cls_logits):
-        softmax_scores = nn.functional.softmax(cls_logits, dim=-1)
-        scores, predicted_labels = softmax_scores.max(dim=-1)
-        foreground_mask = predicted_labels != self.background_label
+        # score per proposal per class, excluding the background class (last column)
+        softmax_scores = nn.functional.softmax(cls_logits, dim=-1)      # [N, num_classes + 1]
+        fg_scores = softmax_scores[:, :self.background_label]           # [N, num_classes] -- background class is not a foreground class
 
-        return predicted_labels, scores, foreground_mask
+        proposal_idx, labels = (fg_scores > self.score_thresh).nonzero(as_tuple=True)       # proposal_idx: [K], labels: [K] -- K is the number of proposals that survived score_thresh for at least one class
+        scores = fg_scores[proposal_idx, labels]
+
+        return proposal_idx, labels, scores
 
     def decode_box_deltas(self, proposals_center, box_deltas):
         # proposals_center: [N, 4] (x_c, y_c, w, h)
@@ -294,7 +309,6 @@ class DetectionNet(nn.Module):
     def forward(self, rpn_proposals, pooled_proposals, img_sizes_before_pad):
         # rpn_proposals:    list of B x [N_i, 4] CORNER absolute px, from RegionProposalNetwork
         # pooled_proposals: list of B x [N_i, 1024, 7, 7], RoIPool output for the same proposals
-        # img_sizes_before_pad: list of B x (img_height, img_width), pre-padding size per image, for clipping
         batch_cls_logits, batch_box_deltas = self.detection_head(pooled_proposals)
 
         batch_size = len(rpn_proposals)
@@ -310,31 +324,43 @@ class DetectionNet(nn.Module):
             box_deltas = batch_box_deltas[i]
             proposals = rpn_proposals[i]
 
-            predicted_labels, scores, foreground_mask = self.select_foreground(cls_logits)
+            proposal_idx, labels, scores = self.select_foreground(cls_logits)
 
-            if foreground_mask.sum() == 0:
-                # Every proposal predicted background for this image
-                labels_list.append(predicted_labels.new_zeros((0,)))
-                scores_list.append(scores.new_zeros((0,)))
+            if proposal_idx.numel() == 0:
+                # Nothing in this image cleared score_thresh for any class
+                labels_list.append(labels)
+                scores_list.append(scores)
                 boxes_list.append(proposals.new_zeros((0, 4)))
                 continue
 
-            fg_labels = predicted_labels[foreground_mask]
-            fg_scores = scores[foreground_mask]
-            fg_proposals = proposals[foreground_mask]
-
-            # box_deltas is [N_i, num_classes * 4] class-specific -- gather each proposal's
-            # deltas for its own predicted class only, same pattern as DetectionLoss.forward
+            # box_deltas is [N, 4 * num_classes] -- reshape to [N, num_classes, 4] 
             num_classes = box_deltas.shape[1] // 4
-            fg_box_deltas = box_deltas[foreground_mask].view(-1, num_classes, 4)
-            predicted_deltas = fg_box_deltas[torch.arange(fg_labels.numel(), device=fg_labels.device), fg_labels]
+            selected_proposals = proposals[proposal_idx]
+            predicted_deltas = box_deltas.view(-1, num_classes, 4)[proposal_idx, labels]
 
-            proposals_center = self.corners_to_center(fg_proposals)
+            proposals_center = self.corners_to_center(selected_proposals)
             decoded_boxes = self.decode_box_deltas(proposals_center, predicted_deltas)
             clipped_boxes = self.clip_boxes_to_image(decoded_boxes, img_height, img_width)
 
-            labels_list.append(fg_labels)
-            scores_list.append(fg_scores)
-            boxes_list.append(clipped_boxes)
+            # Remove boxes that are too small to be valid detections
+            widths = clipped_boxes[:, 2] - clipped_boxes[:, 0]
+            heights = clipped_boxes[:, 3] - clipped_boxes[:, 1]
+            keep = (widths >= self.min_box_size) & (heights >= self.min_box_size)
+            clipped_boxes, labels, scores = clipped_boxes[keep], labels[keep], scores[keep]
+
+
+            if labels.numel() == 0:
+                labels_list.append(labels)
+                scores_list.append(scores)
+                boxes_list.append(clipped_boxes)
+                continue
+
+            # Per-CLASS NMS -- boxes of different classes must not suppress each other
+            keep_idx = ops.batched_nms(clipped_boxes, scores, labels, self.nms_iou_thresh)
+            keep_idx = keep_idx[:self.max_detections_per_image]
+
+            labels_list.append(labels[keep_idx])
+            scores_list.append(scores[keep_idx])
+            boxes_list.append(clipped_boxes[keep_idx])
 
         return labels_list, scores_list, boxes_list
