@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import torch.nn as nn
 from PIL import Image
 from pathlib import Path
+from functools import partial
 from torch.utils.data import Dataset
 
 
@@ -37,7 +38,7 @@ class VOCDataset(Dataset):
         
         return img, annotation_dict
 
-def collate_fn(batch):
+def collate_fn(batch, difficult=False):
     imgs, annotations = zip(*batch)
 
     max_height = max(img.shape[1] for img in imgs)
@@ -47,6 +48,7 @@ def collate_fn(batch):
     img_sizes_before_pad = []
     gt_boxes = []
     gt_labels = []
+    gt_difficult = []   # only populated when difficult=True
 
     for img, annotation in zip(imgs, annotations):
         img_height, img_width = img.shape[1], img.shape[2]
@@ -70,11 +72,19 @@ def collate_fn(batch):
         gt_boxes.append(boxes)
         gt_labels.append(labels)
 
+        if difficult:
+            # index-parallel to boxes/labels for this image, same ragged per-image convention
+            gt_difficult.append(torch.tensor([obj["difficult"] for obj in annotation["objects"]], dtype=torch.bool))
+
+    if difficult:
+        return torch.stack(padded_imgs, dim=0), gt_boxes, gt_labels, img_sizes_before_pad, gt_difficult
+
     return torch.stack(padded_imgs, dim=0), gt_boxes, gt_labels, img_sizes_before_pad
 
-def create_voc_dataloader(img_paths_list, transform=None, batch_size=32, shuffle=True):
+def create_voc_dataloader(img_paths_list, transform=None, batch_size=32, shuffle=True, difficult=False):
     voc_dataset = VOCDataset(img_paths_list, transform=transform)
-    dataloader = torch.utils.data.DataLoader(voc_dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
+    # partial (not a lambda) so the collate stays picklable if num_workers > 0 is ever used
+    dataloader = torch.utils.data.DataLoader(voc_dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=partial(collate_fn, difficult=difficult))
     return dataloader
 
 # Converting VOC annotation XML to dictionary format
@@ -98,9 +108,11 @@ def voc_to_dict(annotation_path):
     for obj in root.findall("object"):
 
         name = obj.find("name").text
+        difficult_tag = obj.find("difficult")   # absent in a few VOC XMLs, treat as not difficult
         obj_dict = {
             "name" : name,
             "class_idx" : CLS_TO_IDX[name],
+            "difficult" : int(difficult_tag.text) if difficult_tag is not None else 0,
             "bndbox" : {
                 "x_min" : float(obj.find("bndbox").find("xmin").text)/img_width,
                 "y_min" : float(obj.find("bndbox").find("ymin").text)/img_height,
