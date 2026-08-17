@@ -77,10 +77,10 @@ Convention used: positive = `1`, negative = `-1`, ignore = `0`.
 ## Detection Net (Inference Decode)
 
 - Wraps a trained `DetectionHead` for test-time use: given `RegionProposalNetwork` proposals and their `RoIPool`-ed features, runs the batched detection head once, then per image:
-  1. Every `(proposal, foreground class)` pair whose softmax probability exceeds `score_thresh` (default 0.05) is emitted as a candidate — **not** just the argmax class. One proposal can therefore produce several detections, and a proposal whose highest-scoring class is background still contributes its foreground classes.
+  1. Every `(proposal, foreground class)` pair whose softmax probability exceeds `score_thresh` (default 0.3) is emitted as a candidate — **not** just the argmax class. One proposal can therefore produce several detections, and a proposal whose highest-scoring class is background still contributes its foreground classes.
   2. Each candidate's box deltas for **its own emitted class** are gathered out of the class-specific delta tensor, un-normalized by `delta_std`, and decoded back to boxes with the same center-format inverse transform as the RPN's decoder.
   3. Boxes are clipped to the image's pre-padding size, then boxes that clipping collapsed to under `min_box_size` in either dimension are dropped.
-  4. Per-**class** NMS (`torchvision.ops.batched_nms`, IoU `nms_iou_thresh`, default 0.5), then a top-`max_detections_per_image` cap by score (default 100).
+  4. Per-**class** NMS (`torchvision.ops.batched_nms`, IoU `nms_iou_thresh`, default 0.3), then a top-`max_detections_per_image` cap by score (default 100).
 
 ### Why argmax was replaced
 
