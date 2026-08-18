@@ -1,3 +1,4 @@
+gradio
 matplotlib==3.11.0
 matplotlib-inline @ file:///home/conda/feedstock_root/build_artifacts/matplotlib-inline_1778264321245/work
 numpy @ file:///Users/ec2-user/croot/numpy_and_numpy_base_1780345797454/work/dist/numpy-2.4.6-cp314-cp314-macosx_12_0_arm64.whl#sha256=8c6bd6201b44c3d1e779152e97b8395d38d00a0e1df41a08f7b7f22d8721514f
