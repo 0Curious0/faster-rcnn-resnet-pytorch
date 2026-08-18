@@ -29,35 +29,25 @@ class Pipeline:
     device: torch.device
 
 
-_CHECKPOINT_SPECS = [
-    ("step2_epoch_6.pt", "backbone_state_dict"),
-    ("step3_epoch_10.pt", "rpn_head_state_dict"),
-    ("step4_epoch_8.pt", "detection_head_state_dict"),
-]
+_CHECKPOINT_NAME = "faster_rcnn_final.bin"
 
 
 def load_pipeline(checkpoint_dir, device):
     checkpoint_dir = Path(checkpoint_dir)
-    missing = [name for name, _ in _CHECKPOINT_SPECS if not (checkpoint_dir / name).exists()]
-    if missing:
+    if not (checkpoint_dir / _CHECKPOINT_NAME).exists():
         raise FileNotFoundError(
-            f"Missing checkpoint file(s) in '{checkpoint_dir}': {', '.join(missing)}. "
-            "These are trained on Colab/Kaggle and are not checked into the repo -- "
-            "copy them from Drive into this directory (or point FRCNN_CHECKPOINT_DIR at "
-            "wherever they live)."
+            f"Missing checkpoint file in '{checkpoint_dir}': {_CHECKPOINT_NAME}. "
         )
 
     backbone = Backbone().to(device)
     rpn_head = RPN_Head(in_channels=1024, mid_channels=512)
     detection_head = DetectionHead()
 
-    backbone_ckpt = torch.load(checkpoint_dir / "step2_epoch_6.pt", map_location=device)
-    rpn_ckpt = torch.load(checkpoint_dir / "step3_epoch_10.pt", map_location=device)
-    detection_head_ckpt = torch.load(checkpoint_dir / "step4_epoch_8.pt", map_location=device)
+    unified_ckpt = torch.load(checkpoint_dir / _CHECKPOINT_NAME, map_location=device)
 
-    backbone.load_state_dict(backbone_ckpt["backbone_state_dict"])
-    rpn_head.load_state_dict(rpn_ckpt["rpn_head_state_dict"])
-    detection_head.load_state_dict(detection_head_ckpt["detection_head_state_dict"])
+    backbone.load_state_dict(unified_ckpt["backbone_state_dict"])
+    rpn_head.load_state_dict(unified_ckpt["rpn_state_dict"])
+    detection_head.load_state_dict(unified_ckpt["detection_state_dict"])
 
     rpn_network = RegionProposalNetwork(rpn_head=rpn_head).to(device)
     roi_pool = RoIPool(output_size=(7, 7), pooling_mode="adaptive").to(device)
