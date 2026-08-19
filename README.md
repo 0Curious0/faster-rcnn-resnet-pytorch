@@ -100,11 +100,59 @@ Per-class NMS (rather than class-agnostic) matters for the same metric: a `perso
 **Step 1 hyperparameters** (from the paper): SGD, momentum 0.9, weight decay 0.0005, lr 0.001 for the first ~60k mini-batches then 0.0001 for ~20k more (paper's batch-size-1 framing). This project's realized schedule: batch size 2 (a deliberate deviation for GPU throughput), 10 total epochs over 07+12 (~82,760 iterations) — 8 epochs at lr 0.001, 2 at lr 0.0001.
 
 
+## Results (VOC2007 test)
+
+### RPN Proposal Recall
+
+| IoU band | Recall | GT boxes recalled |
+|---|---|---|
+| ≥ 0.5 | 83.91% | 219 / 261 |
+| 0.3 – 0.5 | 9.20% | 24 / 261 |
+| < 0.3 | 6.90% | 18 / 261 |
+
+### Detection Net (Fast R-CNN head)
+
+| `score_thresh` | `nms_iou_thresh` | mAP @ IoU 0.5 |
+|---|---|---|
+| 0.1 | 0.3 | **~63%** (best result; per-class AP not separately recorded for this config) |
+| 0.3 | 0.3 | 62.52% (full per-class breakdown below) |
+
+Per-class breakdown, `score_thresh=0.3`, `nms_iou_thresh=0.3`:
+
+| Class | AP | rec[-1] | AP_ceil | n_det | n_gt | n_diff |
+|---|---|---|---|---|---|---|
+| aeroplane | 0.6838 | 0.7333 | 0.7273 | 897 | 285 | 26 |
+| bicycle | 0.6937 | 0.7953 | 0.7273 | 852 | 337 | 52 |
+| bird | 0.6364 | 0.7211 | 0.7273 | 1359 | 459 | 117 |
+| boat | 0.5217 | 0.6540 | 0.6364 | 1951 | 263 | 130 |
+| bottle | 0.2293 | 0.3838 | 0.3636 | 1934 | 469 | 188 |
+| bus | 0.7971 | 0.9014 | 0.9091 | 869 | 213 | 41 |
+| car | 0.6796 | 0.7502 | 0.7273 | 4172 | 1201 | 340 |
+| cat | 0.8025 | 0.8966 | 0.8182 | 764 | 358 | 12 |
+| chair | 0.3560 | 0.6389 | 0.6364 | 7047 | 756 | 618 |
+| cow | 0.6692 | 0.7623 | 0.7273 | 805 | 244 | 85 |
+| diningtable | 0.6474 | 0.8447 | 0.8182 | 941 | 206 | 93 |
+| dog | 0.7892 | 0.8875 | 0.8182 | 1171 | 489 | 41 |
+| horse | 0.7778 | 0.8391 | 0.8182 | 1022 | 348 | 47 |
+| motorbike | 0.6966 | 0.7877 | 0.7273 | 890 | 325 | 44 |
+| person | 0.5916 | 0.6879 | 0.6364 | 10485 | 4528 | 699 |
+| pottedplant | 0.2850 | 0.4729 | 0.4545 | 3228 | 480 | 112 |
+| sheep | 0.5681 | 0.6736 | 0.6364 | 880 | 242 | 69 |
+| sofa | 0.6941 | 0.8912 | 0.8182 | 2019 | 239 | 157 |
+| train | 0.7728 | 0.8688 | 0.8182 | 1163 | 282 | 20 |
+| tvmonitor | 0.6119 | 0.7792 | 0.7273 | 2071 | 308 | 53 |
+
+**mAP @ IoU 0.5: 0.6252** — mean recall[-1]: 0.7485 — total detections: 44,520 — total GT (non-difficult): 12,032 — difficult GT excluded: 2,944.
+
 ## Known Deviations From the Paper (Summary)
 
-| Deviation | Reason |
-|---|---|
-| ResNet-50 instead of ResNet-101 | Compute constraint |
-| Batch size 2 instead of 1 |
+| Deviation | Reason | Expected effect on mAP |
+|---|---|---|
+| ResNet-50 instead of ResNet-101 | Compute constraint | Weaker features than ResNet-101, likely costing several mAP points — probably felt most on small/textured classes like `bottle`/`pottedplant`, this project's weakest. Not isolated by a ResNet-101 run. |
+| Batch size 2 instead of 1 | GPU throughput | Paper's lr schedule (per-image, batch size 1) reused unscaled, changing gradient noise per step. Not isolated. |
+| No horizontal flip augmentation | Not implemented | Paper's VOC recipe uses flipping as a free 2× augmentation; skipping it likely costs some mAP, more on sparser classes. Not isolated. |
+| BatchNorm frozen from Step 2 onward | Batch size 2 is too small for stable BN statistics — standard practice, not ad hoc | Expected neutral-to-beneficial vs. unfrozen (paper's VGG16 has no BN to compare against). Step 1 is the exception — its backbone trains with BN unfrozen. |
+
+None of these were isolated by a controlled ablation — the ~63% mAP reflects their combined effect, not any single deviation's contribution.
 
 
