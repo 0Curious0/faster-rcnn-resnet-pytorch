@@ -10,6 +10,8 @@ from src.roi import RoIPool
 from src.detection_net import DetectionHead, DetectionNet
 from src.dataset import VOC_CLASSES
 
+from huggingface_hub import hf_hub_download
+
 # One fixed, distinguishable color per VOC class, keyed by VOC_CLASSES order.
 _PALETTE = [
     "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
@@ -35,15 +37,17 @@ _CHECKPOINT_NAME = "faster_rcnn_final.bin"
 def load_pipeline(checkpoint_dir, device):
     checkpoint_dir = Path(checkpoint_dir)
     if not (checkpoint_dir / _CHECKPOINT_NAME).exists():
-        raise FileNotFoundError(
-            f"Missing checkpoint file in '{checkpoint_dir}': {_CHECKPOINT_NAME}. "
-        )
+        print(f"Missing checkpoint file in '{checkpoint_dir}': {_CHECKPOINT_NAME}. ")
+
+        checkpoint_path = hf_hub_download(repo_id="0Curious0/faster_rcnn_resnet50", filename="checkpoints/faster_rcnn_final.bin")
+    else:
+        checkpoint_path = checkpoint_dir / _CHECKPOINT_NAME
 
     backbone = Backbone().to(device)
     rpn_head = RPN_Head(in_channels=1024, mid_channels=512)
     detection_head = DetectionHead()
 
-    unified_ckpt = torch.load(checkpoint_dir / _CHECKPOINT_NAME, map_location=device)
+    unified_ckpt = torch.load(checkpoint_path, map_location=device)
 
     backbone.load_state_dict(unified_ckpt["backbone_state_dict"])
     rpn_head.load_state_dict(unified_ckpt["rpn_state_dict"])
