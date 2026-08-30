@@ -1,6 +1,8 @@
 import os
 import sys
 
+import spaces
+
 import gradio as gr
 import torch
 
@@ -16,6 +18,7 @@ except FileNotFoundError as e:
     sys.exit(1)
 
 
+@spaces.GPU
 def detect(pil_image, score_thresh, nms_iou_thresh):
     detections = predict(pipeline, pil_image, score_thresh, nms_iou_thresh)
     return draw_boxes(pil_image, detections)
